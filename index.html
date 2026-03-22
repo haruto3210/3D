@@ -6,321 +6,284 @@
 <script type="module">
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
 
-// =========================
-// 基本セットアップ
-// =========================
-const renderer = new THREE.WebGLRenderer({
-  canvas: document.getElementById("game")
-});
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("game") });
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 
-const camera = new THREE.PerspectiveCamera(
-  75, window.innerWidth / window.innerHeight, 0.1, 1000
-);
-camera.position.set(0, 10, 0);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 3, 0);
 
-// =========================
 // ライト
-// =========================
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambient);
 const sun = new THREE.DirectionalLight(0xffffff, 1);
-sun.position.set(30, 50, 20);
+sun.position.set(20, 40, 10);
+sun.castShadow = true;
 scene.add(sun);
 
-// =========================
-// ブロック種類 & インベントリ
-// =========================
+// ブロック管理
 const BLOCK_TYPES = [
   { name: "Grass", color: 0x55aa55 },
   { name: "Dirt",  color: 0x8b4513 },
   { name: "Stone", color: 0x777777 },
   { name: "Wood",  color: 0x8b5a2b },
-  { name: "Leaf",  color: 0x228b22 },
 ];
 let currentBlockIndex = 0;
 
-window.addEventListener("keydown", (e) => {
-  const n = parseInt(e.key);
-  if (n >= 1 && n <= BLOCK_TYPES.length) {
-    currentBlockIndex = n - 1;
-  }
-});
-
-// =========================
-// ブロック生成
-// =========================
 const blockGeo = new THREE.BoxGeometry(1, 1, 1);
-function createBlockMesh(color) {
-  const mat = new THREE.MeshStandardMaterial({ color });
-  const mesh = new THREE.Mesh(blockGeo, mat);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
+const blocks = new Map();
+const keyXYZ = (x,y,z)=>`${x},${y},${z}`;
 
-// ワールド管理
-const blocks = new Map(); // key: "x,y,z" → mesh
-function keyFromXYZ(x, y, z) {
-  return `${x},${y},${z}`;
-}
-function addBlock(x, y, z, typeIndex) {
-  const key = keyFromXYZ(x, y, z);
+function addBlock(x,y,z,typeIndex){
+  const key = keyXYZ(x,y,z);
   if (blocks.has(key)) return;
-  const info = BLOCK_TYPES[typeIndex];
-  const mesh = createBlockMesh(info.color);
-  mesh.position.set(x, y, z);
-  mesh.userData.typeIndex = typeIndex;
-  scene.add(mesh);
-  blocks.set(key, mesh);
+  const mat = new THREE.MeshStandardMaterial({ color: BLOCK_TYPES[typeIndex].color });
+  const m = new THREE.Mesh(blockGeo, mat);
+  m.position.set(x,y,z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  scene.add(m);
+  blocks.set(key,m);
 }
-function removeBlock(x, y, z) {
-  const key = keyFromXYZ(x, y, z);
-  const mesh = blocks.get(key);
-  if (!mesh) return;
-  scene.remove(mesh);
+function removeBlock(x,y,z){
+  const key = keyXYZ(x,y,z);
+  const m = blocks.get(key);
+  if(!m) return;
+  scene.remove(m);
   blocks.delete(key);
 }
 
-// =========================
-// 簡易ノイズ（高さ生成）
-// =========================
-function pseudoNoise(x, z) {
-  const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
-  return s - Math.floor(s);
-}
-
-// =========================
-// Chunk生成（無限ワールド風）
-// =========================
-const CHUNK_SIZE = 16;
-const VIEW_DISTANCE = 3;
-const generatedChunks = new Set(); // "cx,cz"
-
-function chunkKey(cx, cz) {
-  return `${cx},${cz}`;
-}
-
-function generateChunk(cx, cz) {
-  const ck = chunkKey(cx, cz);
-  if (generatedChunks.has(ck)) return;
-  generatedChunks.add(ck);
-
-  const startX = cx * CHUNK_SIZE;
-  const startZ = cz * CHUNK_SIZE;
-
-  for (let x = 0; x < CHUNK_SIZE; x++) {
-    for (let z = 0; z < CHUNK_SIZE; z++) {
-      const wx = startX + x;
-      const wz = startZ + z;
-
-      const h = Math.floor(pseudoNoise(wx * 0.2, wz * 0.2) * 4) + 2;
-
-      for (let y = 0; y < h; y++) {
-        let typeIndex = 1; // Dirt
-        if (y === h - 1) typeIndex = 0; // Grass
-        if (y < h - 3) typeIndex = 2;   // Stone
-        addBlock(wx, y, wz, typeIndex);
-      }
-
-      if (Math.random() < 0.02) {
-        for (let ty = h; ty < h + 3; ty++) {
-          addBlock(wx, ty, wz, 3); // Wood
-        }
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dz = -1; dz <= 1; dz++) {
-            addBlock(wx + dx, h + 3, wz + dz, 4); // Leaf
-          }
-        }
-      }
-    }
+// 地面
+for(let x=-20;x<20;x++){
+  for(let z=-20;z<20;z++){
+    addBlock(x,0,z,0);
   }
 }
 
-function updateChunksAroundPlayer() {
-  const px = camera.position.x;
-  const pz = camera.position.z;
-  const cx = Math.floor(px / CHUNK_SIZE);
-  const cz = Math.floor(pz / CHUNK_SIZE);
-
-  for (let x = -VIEW_DISTANCE; x <= VIEW_DISTANCE; x++) {
-    for (let z = -VIEW_DISTANCE; z <= VIEW_DISTANCE; z++) {
-      generateChunk(cx + x, cz + z);
-    }
-  }
-}
-
-// 初期生成
-updateChunksAroundPlayer();
-
-// =========================
-// FPS視点（PointerLock）
-// =========================
-document.body.addEventListener("click", () => {
-  document.body.requestPointerLock();
-});
-
+// FPS操作
+let keys = {};
+let isRunning = false;
+let isSneaking = false;
 let yaw = 0;
 let pitch = 0;
 
-document.addEventListener("mousemove", (e) => {
-  if (document.pointerLockElement === document.body) {
-    yaw   -= e.movementX * 0.002;
-    pitch -= e.movementY * 0.002;
-    pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+document.addEventListener("keydown",e=>{
+  keys[e.key]=true;
+  if(e.key==="Shift") isRunning=true;
+  if(e.key==="Control") isSneaking=true;
+  const n=parseInt(e.key);
+  if(n>=1 && n<=BLOCK_TYPES.length){
+    currentBlockIndex=n-1;
+    updateHandColor();
+  }
+});
+document.addEventListener("keyup",e=>{
+  keys[e.key]=false;
+  if(e.key==="Shift") isRunning=false;
+  if(e.key==="Control") isSneaking=false;
+});
+
+document.body.addEventListener("click",()=>{
+  document.body.requestPointerLock();
+});
+document.addEventListener("mousemove",e=>{
+  if(document.pointerLockElement===document.body){
+    yaw   -= e.movementX*0.002;
+    pitch -= e.movementY*0.002;
+    pitch = Math.max(-Math.PI/2,Math.min(Math.PI/2,pitch));
   }
 });
 
-// =========================
-// 移動 & ジャンプ & 当たり判定
-// =========================
-let keys = {};
-document.addEventListener("keydown", (e) => keys[e.key] = true);
-document.addEventListener("keyup", (e) => keys[e.key] = false);
+// 手（選択ブロックを持つ）
+const handGeo = new THREE.BoxGeometry(0.4,0.4,0.7);
+const handMat = new THREE.MeshStandardMaterial({ color: BLOCK_TYPES[0].color });
+const hand = new THREE.Mesh(handGeo, handMat);
+hand.position.set(0.5,-0.6,-1.0);
+hand.castShadow = true;
+camera.add(hand);
+scene.add(camera);
 
-let velocityY = 0;
-const gravity = -0.015;
-let onGround = false;
-
-function isSolidAt(x, y, z) {
-  return blocks.has(keyFromXYZ(Math.floor(x), Math.floor(y), Math.floor(z)));
+function updateHandColor(){
+  hand.material.color.setHex(BLOCK_TYPES[currentBlockIndex].color);
 }
 
-function moveWithCollision(dx, dy, dz) {
+// 手アニメーション
+let handAnim = 0;
+let handAction = null;
+document.addEventListener("mousedown",e=>{
+  if(document.pointerLockElement!==document.body) return;
+  handAnim = 0.3;
+  handAction = (e.button===0) ? "hit" : "place";
+  if(e.button===0) tryBreakBlock();
+  if(e.button===2) tryPlaceBlock();
+});
+document.addEventListener("contextmenu",e=>e.preventDefault());
+
+// レイキャスト（破壊・設置・ハイライト）
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2(0,0);
+const highlightGeo = new THREE.BoxGeometry(1.02,1.02,1.02);
+const highlightMat = new THREE.MeshBasicMaterial({ color:0xffff00, wireframe:true });
+const highlight = new THREE.Mesh(highlightGeo, highlightMat);
+highlight.visible=false;
+scene.add(highlight);
+let targetPos=null;
+let placePos=null;
+
+function updateRaycast(){
+  raycaster.setFromCamera(mouse,camera);
+  const hits = raycaster.intersectObjects([...blocks.values()]);
+  if(hits.length>0){
+    const hit = hits[0];
+    const p = hit.object.position;
+    highlight.position.copy(p);
+    highlight.visible=true;
+    targetPos={x:p.x,y:p.y,z:p.z};
+    const n = hit.face.normal;
+    placePos={x:p.x+n.x,y:p.y+n.y,z:p.z+n.z};
+  }else{
+    highlight.visible=false;
+    targetPos=null;
+    placePos=null;
+  }
+}
+function tryBreakBlock(){
+  if(!targetPos) return;
+  removeBlock(targetPos.x,targetPos.y,targetPos.z);
+}
+function tryPlaceBlock(){
+  if(!placePos) return;
+  const {x,y,z}=placePos;
+  if(y<1) return;
+  addBlock(x,y,z,currentBlockIndex);
+}
+
+// 重力・当たり判定・スニーク
+let velocityY=0;
+const gravity=-0.015;
+let onGround=false;
+
+function isSolidAt(x,y,z){
+  return blocks.has(keyXYZ(Math.floor(x),Math.floor(y),Math.floor(z)));
+}
+function moveWithCollision(dx,dy,dz){
   const next = camera.position.clone();
 
   // X
   next.x += dx;
-  if (!isSolidAt(next.x, next.y - 1.5, next.z)) {
+  if(!isSolidAt(next.x,next.y-1.5,next.z)){
     camera.position.x = next.x;
   }
 
-  // Z
+  // Z（スニークで端から落ちない）
   next.z += dz;
-  if (!isSolidAt(camera.position.x, next.y - 1.5, next.z)) {
-    camera.position.z = next.z;
+  const footY = camera.position.y-1.6;
+  const nextFootX = camera.position.x;
+  const nextFootZ = next.z;
+  const underNow  = isSolidAt(camera.position.x,footY-0.1,camera.position.z);
+  const underNext = isSolidAt(nextFootX,footY-0.1,nextFootZ);
+  if(!isSneaking || underNext || !underNow){
+    if(!isSolidAt(camera.position.x,next.y-1.5,next.z)){
+      camera.position.z = next.z;
+    }
   }
 
   // Y
   next.y += dy;
-  if (!isSolidAt(camera.position.x, next.y - 1.5, camera.position.z)) {
+  if(!isSolidAt(camera.position.x,next.y-1.5,camera.position.z)){
     camera.position.y = next.y;
-  } else {
-    velocityY = 0;
-    onGround = true;
+  }else{
+    velocityY=0;
+    onGround=true;
   }
 }
 
-// =========================
-// ブロックハイライト
-// =========================
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2(0, 0); // 画面中央
-const highlightGeo = new THREE.BoxGeometry(1.01, 1.01, 1.01);
-const highlightMat = new THREE.MeshBasicMaterial({
-  color: 0xffff00,
-  wireframe: true
-});
-const highlightMesh = new THREE.Mesh(highlightGeo, highlightMat);
-highlightMesh.visible = false;
-scene.add(highlightMesh);
+// 歩行アニメーション・足音・FOV
+let bobTime=0;
+let bobAmount=0.05;
+let bobSpeed=0.15;
+let footstepTimer=0;
 
-let targetBlockPos = null;
-let placeBlockPos = null;
+function playFootstep(){
+  // new Audio("footstep.mp3").play();
+}
 
-// 破壊・設置
-document.addEventListener("mousedown", (e) => {
-  if (document.pointerLockElement !== document.body) return;
-  if (!targetBlockPos && !placeBlockPos) return;
-
-  if (e.button === 0 && targetBlockPos) {
-    removeBlock(targetBlockPos.x, targetBlockPos.y, targetBlockPos.z);
-  }
-
-  if (e.button === 2 && placeBlockPos) {
-    addBlock(placeBlockPos.x, placeBlockPos.y, placeBlockPos.z, currentBlockIndex);
-  }
-});
-
-document.addEventListener("contextmenu", (e) => e.preventDefault());
-
-// =========================
-// メインループ
-// =========================
-function animate() {
+function animate(){
   requestAnimationFrame(animate);
 
-  // カメラ回転
-  camera.rotation.order = "YXZ";
-  camera.rotation.y = yaw;
-  camera.rotation.x = pitch;
+  camera.rotation.order="YXZ";
+  camera.rotation.y=yaw;
+  camera.rotation.x=pitch;
 
-  // 移動
-  const speed = 0.15;
-  const forward = new THREE.Vector3(
-    -Math.sin(yaw),
-    0,
-    -Math.cos(yaw)
-  );
-  const right = new THREE.Vector3(
-    Math.cos(yaw),
-    0,
-    -Math.sin(yaw)
-  );
+  let speed=0.15;
+  if(isRunning && onGround) speed=0.28;
+  if(isSneaking && onGround) speed=0.07;
 
-  let dx = 0, dz = 0;
-  if (keys["w"]) { dx += forward.x * speed; dz += forward.z * speed; }
-  if (keys["s"]) { dx -= forward.x * speed; dz -= forward.z * speed; }
-  if (keys["a"]) { dx -= right.x * speed;   dz -= right.z * speed; }
-  if (keys["d"]) { dx += right.x * speed;   dz += right.z * speed; }
+  const forward = new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));
+  const right   = new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
 
-  // 重力 & ジャンプ
+  let dx=0,dz=0;
+  if(keys["w"]){dx+=forward.x*speed;dz+=forward.z*speed;}
+  if(keys["s"]){dx-=forward.x*speed;dz-=forward.z*speed;}
+  if(keys["a"]){dx-=right.x*speed;  dz-=right.z*speed;}
+  if(keys["d"]){dx+=right.x*speed;  dz+=right.z*speed;}
+
   velocityY += gravity;
-  if (keys[" "] && onGround) {
-    velocityY = 0.25;
-    onGround = false;
+  if(keys[" "] && onGround){
+    velocityY=0.25;
+    onGround=false;
   }
 
-  moveWithCollision(dx, velocityY, dz);
+  moveWithCollision(dx,velocityY,dz);
 
-  if (camera.position.y < -20) {
-    camera.position.set(0, 20, 0);
-    velocityY = 0;
+  if(camera.position.y<-20){
+    camera.position.set(0,5,0);
+    velocityY=0;
   }
 
-  // チャンク更新
-  updateChunksAroundPlayer();
+  const moving = (dx!==0 || dz!==0) && onGround;
 
-  // ブロックハイライト
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects([...blocks.values()]);
-  if (hits.length > 0) {
-    const hit = hits[0];
-    const p = hit.object.position;
-    highlightMesh.position.copy(p);
-    highlightMesh.visible = true;
+  if(moving){
+    bobTime += bobSpeed*(isRunning?1.8:1);
+    camera.position.y += Math.sin(bobTime)*bobAmount;
+    camera.position.x += Math.sin(bobTime*2)*0.02;
 
-    targetBlockPos = {
-      x: p.x,
-      y: p.y,
-      z: p.z
-    };
+    hand.position.y = -0.6 + Math.sin(bobTime*2)*0.06;
+    hand.position.x = 0.5 + Math.cos(bobTime*2)*0.06;
 
-    const n = hit.face.normal;
-    placeBlockPos = {
-      x: p.x + n.x,
-      y: p.y + n.y,
-      z: p.z + n.z
-    };
-  } else {
-    highlightMesh.visible = false;
-    targetBlockPos = null;
-    placeBlockPos = null;
+    footstepTimer += speed*0.5;
+    if(footstepTimer>1){
+      playFootstep();
+      footstepTimer=0;
+    }
+  }else{
+    bobTime=0;
+    hand.position.set(0.5,-0.6,-1.0);
   }
 
-  renderer.render(scene, camera);
+  // 手アニメーション
+  if(handAnim>0){
+    handAnim-=0.05;
+    const t = handAnim;
+    if(handAction==="hit"){
+      hand.rotation.x = -0.8*t;
+    }else{
+      hand.rotation.x = 0.8*t;
+    }
+  }else{
+    hand.rotation.x = 0;
+  }
+
+  // FOV（走ると広がる）
+  const targetFov = isRunning ? 90 : 75;
+  camera.fov += (targetFov - camera.fov)*0.1;
+  camera.updateProjectionMatrix();
+
+  updateRaycast();
+  renderer.render(scene,camera);
 }
 animate();
 </script>
