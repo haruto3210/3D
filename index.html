@@ -17,42 +17,143 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 
-// FPSカメラ
 const camera = new THREE.PerspectiveCamera(
   75, window.innerWidth / window.innerHeight, 0.1, 1000
 );
-camera.position.set(0, 2, 0);
+camera.position.set(0, 10, 0);
 
 // =========================
 // ライト
 // =========================
-scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
 const sun = new THREE.DirectionalLight(0xffffff, 1);
-sun.position.set(10, 20, 10);
+sun.position.set(30, 50, 20);
 scene.add(sun);
+
+// =========================
+// ブロック種類 & インベントリ
+// =========================
+const BLOCK_TYPES = [
+  { name: "Grass", color: 0x55aa55 },
+  { name: "Dirt",  color: 0x8b4513 },
+  { name: "Stone", color: 0x777777 },
+  { name: "Wood",  color: 0x8b5a2b },
+  { name: "Leaf",  color: 0x228b22 },
+];
+let currentBlockIndex = 0;
+
+window.addEventListener("keydown", (e) => {
+  const n = parseInt(e.key);
+  if (n >= 1 && n <= BLOCK_TYPES.length) {
+    currentBlockIndex = n - 1;
+  }
+});
 
 // =========================
 // ブロック生成
 // =========================
-function createBlock(x, y, z, color = 0x55aa55) {
-  const geo = new THREE.BoxGeometry(1, 1, 1);
+const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+function createBlockMesh(color) {
   const mat = new THREE.MeshStandardMaterial({ color });
-  const block = new THREE.Mesh(geo, mat);
-  block.position.set(x, y, z);
-  block.castShadow = true;
-  block.receiveShadow = true;
-  scene.add(block);
-  return block;
+  const mesh = new THREE.Mesh(blockGeo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+// ワールド管理
+const blocks = new Map(); // key: "x,y,z" → mesh
+function keyFromXYZ(x, y, z) {
+  return `${x},${y},${z}`;
+}
+function addBlock(x, y, z, typeIndex) {
+  const key = keyFromXYZ(x, y, z);
+  if (blocks.has(key)) return;
+  const info = BLOCK_TYPES[typeIndex];
+  const mesh = createBlockMesh(info.color);
+  mesh.position.set(x, y, z);
+  mesh.userData.typeIndex = typeIndex;
+  scene.add(mesh);
+  blocks.set(key, mesh);
+}
+function removeBlock(x, y, z) {
+  const key = keyFromXYZ(x, y, z);
+  const mesh = blocks.get(key);
+  if (!mesh) return;
+  scene.remove(mesh);
+  blocks.delete(key);
 }
 
 // =========================
-// 地面（20×20）
+// 簡易ノイズ（高さ生成）
 // =========================
-for (let x = -10; x < 10; x++) {
-  for (let z = -10; z < 10; z++) {
-    createBlock(x, 0, z, 0x55aa55);
+function pseudoNoise(x, z) {
+  const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// =========================
+// Chunk生成（無限ワールド風）
+// =========================
+const CHUNK_SIZE = 16;
+const VIEW_DISTANCE = 3;
+const generatedChunks = new Set(); // "cx,cz"
+
+function chunkKey(cx, cz) {
+  return `${cx},${cz}`;
+}
+
+function generateChunk(cx, cz) {
+  const ck = chunkKey(cx, cz);
+  if (generatedChunks.has(ck)) return;
+  generatedChunks.add(ck);
+
+  const startX = cx * CHUNK_SIZE;
+  const startZ = cz * CHUNK_SIZE;
+
+  for (let x = 0; x < CHUNK_SIZE; x++) {
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      const wx = startX + x;
+      const wz = startZ + z;
+
+      const h = Math.floor(pseudoNoise(wx * 0.2, wz * 0.2) * 4) + 2;
+
+      for (let y = 0; y < h; y++) {
+        let typeIndex = 1; // Dirt
+        if (y === h - 1) typeIndex = 0; // Grass
+        if (y < h - 3) typeIndex = 2;   // Stone
+        addBlock(wx, y, wz, typeIndex);
+      }
+
+      if (Math.random() < 0.02) {
+        for (let ty = h; ty < h + 3; ty++) {
+          addBlock(wx, ty, wz, 3); // Wood
+        }
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            addBlock(wx + dx, h + 3, wz + dz, 4); // Leaf
+          }
+        }
+      }
+    }
   }
 }
+
+function updateChunksAroundPlayer() {
+  const px = camera.position.x;
+  const pz = camera.position.z;
+  const cx = Math.floor(px / CHUNK_SIZE);
+  const cz = Math.floor(pz / CHUNK_SIZE);
+
+  for (let x = -VIEW_DISTANCE; x <= VIEW_DISTANCE; x++) {
+    for (let z = -VIEW_DISTANCE; z <= VIEW_DISTANCE; z++) {
+      generateChunk(cx + x, cz + z);
+    }
+  }
+}
+
+// 初期生成
+updateChunksAroundPlayer();
 
 // =========================
 // FPS視点（PointerLock）
@@ -66,61 +167,87 @@ let pitch = 0;
 
 document.addEventListener("mousemove", (e) => {
   if (document.pointerLockElement === document.body) {
-    yaw -= e.movementX * 0.002;
+    yaw   -= e.movementX * 0.002;
     pitch -= e.movementY * 0.002;
     pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
   }
 });
 
 // =========================
-// 移動 & ジャンプ
+// 移動 & ジャンプ & 当たり判定
 // =========================
 let keys = {};
 document.addEventListener("keydown", (e) => keys[e.key] = true);
 document.addEventListener("keyup", (e) => keys[e.key] = false);
 
 let velocityY = 0;
-const gravity = -0.01;
+const gravity = -0.015;
 let onGround = false;
 
-// =========================
-// ブロック破壊・設置
-// =========================
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2(0, 0); // 中央固定
+function isSolidAt(x, y, z) {
+  return blocks.has(keyFromXYZ(Math.floor(x), Math.floor(y), Math.floor(z)));
+}
 
-document.addEventListener("mousedown", (e) => {
-  if (document.pointerLockElement !== document.body) return;
+function moveWithCollision(dx, dy, dz) {
+  const next = camera.position.clone();
 
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(scene.children);
-
-  if (hits.length === 0) return;
-
-  const block = hits[0].object;
-
-  if (e.button === 0) {
-    // 左クリック → 壊す
-    scene.remove(block);
+  // X
+  next.x += dx;
+  if (!isSolidAt(next.x, next.y - 1.5, next.z)) {
+    camera.position.x = next.x;
   }
 
-  if (e.button === 2) {
-    // 右クリック → 置く
-    const p = hits[0].point;
-    const n = hits[0].face.normal;
+  // Z
+  next.z += dz;
+  if (!isSolidAt(camera.position.x, next.y - 1.5, next.z)) {
+    camera.position.z = next.z;
+  }
 
-    const x = Math.floor(p.x + n.x);
-    const y = Math.floor(p.y + n.y);
-    const z = Math.floor(p.z + n.z);
+  // Y
+  next.y += dy;
+  if (!isSolidAt(camera.position.x, next.y - 1.5, camera.position.z)) {
+    camera.position.y = next.y;
+  } else {
+    velocityY = 0;
+    onGround = true;
+  }
+}
 
-    createBlock(x, y, z, 0xaaaaaa);
+// =========================
+// ブロックハイライト
+// =========================
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2(0, 0); // 画面中央
+const highlightGeo = new THREE.BoxGeometry(1.01, 1.01, 1.01);
+const highlightMat = new THREE.MeshBasicMaterial({
+  color: 0xffff00,
+  wireframe: true
+});
+const highlightMesh = new THREE.Mesh(highlightGeo, highlightMat);
+highlightMesh.visible = false;
+scene.add(highlightMesh);
+
+let targetBlockPos = null;
+let placeBlockPos = null;
+
+// 破壊・設置
+document.addEventListener("mousedown", (e) => {
+  if (document.pointerLockElement !== document.body) return;
+  if (!targetBlockPos && !placeBlockPos) return;
+
+  if (e.button === 0 && targetBlockPos) {
+    removeBlock(targetBlockPos.x, targetBlockPos.y, targetBlockPos.z);
+  }
+
+  if (e.button === 2 && placeBlockPos) {
+    addBlock(placeBlockPos.x, placeBlockPos.y, placeBlockPos.z, currentBlockIndex);
   }
 });
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // =========================
-// ゲームループ
+// メインループ
 // =========================
 function animate() {
   requestAnimationFrame(animate);
@@ -131,7 +258,7 @@ function animate() {
   camera.rotation.x = pitch;
 
   // 移動
-  const speed = 0.1;
+  const speed = 0.15;
   const forward = new THREE.Vector3(
     -Math.sin(yaw),
     0,
@@ -143,24 +270,54 @@ function animate() {
     -Math.sin(yaw)
   );
 
-  if (keys["w"]) camera.position.addScaledVector(forward, speed);
-  if (keys["s"]) camera.position.addScaledVector(forward, -speed);
-  if (keys["a"]) camera.position.addScaledVector(right, -speed);
-  if (keys["d"]) camera.position.addScaledVector(right, speed);
+  let dx = 0, dz = 0;
+  if (keys["w"]) { dx += forward.x * speed; dz += forward.z * speed; }
+  if (keys["s"]) { dx -= forward.x * speed; dz -= forward.z * speed; }
+  if (keys["a"]) { dx -= right.x * speed;   dz -= right.z * speed; }
+  if (keys["d"]) { dx += right.x * speed;   dz += right.z * speed; }
 
-  // ジャンプ & 重力
+  // 重力 & ジャンプ
   velocityY += gravity;
-  camera.position.y += velocityY;
-
-  if (camera.position.y < 2) {
-    camera.position.y = 2;
-    velocityY = 0;
-    onGround = true;
+  if (keys[" "] && onGround) {
+    velocityY = 0.25;
+    onGround = false;
   }
 
-  if (keys[" "] && onGround) {
-    velocityY = 0.2;
-    onGround = false;
+  moveWithCollision(dx, velocityY, dz);
+
+  if (camera.position.y < -20) {
+    camera.position.set(0, 20, 0);
+    velocityY = 0;
+  }
+
+  // チャンク更新
+  updateChunksAroundPlayer();
+
+  // ブロックハイライト
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects([...blocks.values()]);
+  if (hits.length > 0) {
+    const hit = hits[0];
+    const p = hit.object.position;
+    highlightMesh.position.copy(p);
+    highlightMesh.visible = true;
+
+    targetBlockPos = {
+      x: p.x,
+      y: p.y,
+      z: p.z
+    };
+
+    const n = hit.face.normal;
+    placeBlockPos = {
+      x: p.x + n.x,
+      y: p.y + n.y,
+      z: p.z + n.z
+    };
+  } else {
+    highlightMesh.visible = false;
+    targetBlockPos = null;
+    placeBlockPos = null;
   }
 
   renderer.render(scene, camera);
